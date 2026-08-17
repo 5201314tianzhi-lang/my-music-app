@@ -50,7 +50,7 @@ jobs:
         sdkmanager "platforms;android-33" "build-tools;33.0.2"
     
     - name: 添加执行权限
-      run: chmod +x ./gradlew
+      run: chmod +x ./android/gradlew
     
     - name: 构建 Debug APK
       working-directory: ./android
