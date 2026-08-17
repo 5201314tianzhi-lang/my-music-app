@@ -42,12 +42,8 @@ jobs:
         curl -sL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdline-tools.zip
         sudo mkdir -p /usr/local/lib/android-sdk/cmdline-tools
         sudo unzip -q /tmp/cmdline-tools.zip -d /usr/local/lib/android-sdk/cmdline-tools
-        # 检查解压后的目录结构
-        ls -la /usr/local/lib/android-sdk/cmdline-tools/
-        # 重命名 tools 目录为 latest
-        if [ -d /usr/local/lib/android-sdk/cmdline-tools/tools ]; then
-          sudo mv /usr/local/lib/android-sdk/cmdline-tools/tools /usr/local/lib/android-sdk/cmdline-tools/latest
-        fi
+        # 重命名 cmdline-tools 为 latest
+        sudo mv /usr/local/lib/android-sdk/cmdline-tools/cmdline-tools /usr/local/lib/android-sdk/cmdline-tools/latest
         export PATH="$PATH:/usr/local/lib/android-sdk/cmdline-tools/latest/bin"
         sdkmanager "platforms;android-33" "build-tools;33.0.2"
     
