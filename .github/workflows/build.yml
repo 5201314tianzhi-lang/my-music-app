@@ -31,14 +31,22 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
     
-    - name: 安装 Android SDK 工具
+    - name: 安装 Android SDK 组件
       run: |
         mkdir -p $ANDROID_HOME/licenses
         echo "d56f5187479451eabf01fb78af6dfcb131a6481e" > $ANDROID_HOME/licenses/android-sdk-license
         echo "84831b9409646a918e30573bab4c9c91346d8abd" >> $ANDROID_HOME/licenses/android-sdk-license
         sudo apt-get update
         sudo apt-get install -y android-sdk
-        sudo /usr/lib/android-sdk/tools/bin/sdkmanager "platforms;android-33" "build-tools;33.0.2"
+        # 下载 Android SDK command-line-tools
+        sdk_url="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
+        sdk_zip="/tmp/cmdline-tools.zip"
+        curl -sL "$sdk_url" -o "$sdk_zip"
+        mkdir -p /tmp/cmdline-tools
+        unzip -q "$sdk_zip" -d /tmp/cmdline-tools
+        mv /tmp/cmdline-tools/cmdline-tools/latest /tmp/cmdline-tools/cmdline-tools/bin
+        export PATH="$PATH:/tmp/cmdline-tools/cmdline-tools/bin"
+        sdkmanager "platforms;android-33" "build-tools;33.0.2"
     
     - name: 添加执行权限
       run: chmod +x ./gradlew
