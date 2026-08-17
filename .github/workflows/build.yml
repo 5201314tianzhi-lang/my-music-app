@@ -40,9 +40,9 @@ jobs:
         sudo apt-get install -y android-sdk
         # 下载并安装 command-line-tools
         curl -sL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdline-tools.zip
-        mkdir -p /usr/local/lib/android-sdk/cmdline-tools
-        unzip -q /tmp/cmdline-tools.zip -d /usr/local/lib/android-sdk/cmdline-tools
-        mv /usr/local/lib/android-sdk/cmdline-tools/tools /usr/local/lib/android-sdk/cmdline-tools/latest
+        sudo mkdir -p /usr/local/lib/android-sdk/cmdline-tools
+        sudo unzip -q /tmp/cmdline-tools.zip -d /usr/local/lib/android-sdk/cmdline-tools
+        sudo mv /usr/local/lib/android-sdk/cmdline-tools/tools /usr/local/lib/android-sdk/cmdline-tools/latest
         export PATH="$PATH:/usr/local/lib/android-sdk/cmdline-tools/latest/bin"
         sdkmanager "platforms;android-33" "build-tools;33.0.2"
     
