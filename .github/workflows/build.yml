@@ -31,21 +31,19 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-gradle-
     
-    - name: 安装 Android SDK 组件
+    - name: 安装 Android SDK 工具
       run: |
         mkdir -p $ANDROID_HOME/licenses
         echo "d56f5187479451eabf01fb78af6dfcb131a6481e" > $ANDROID_HOME/licenses/android-sdk-license
         echo "84831b9409646a918e30573bab4c9c91346d8abd" >> $ANDROID_HOME/licenses/android-sdk-license
         sudo apt-get update
         sudo apt-get install -y android-sdk
-        # 下载 Android SDK command-line-tools
-        sdk_url="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
-        sdk_zip="/tmp/cmdline-tools.zip"
-        curl -sL "$sdk_url" -o "$sdk_zip"
-        mkdir -p /tmp/cmdline-tools
-        unzip -q "$sdk_zip" -d /tmp/cmdline-tools
-        mv /tmp/cmdline-tools/cmdline-tools/latest /tmp/cmdline-tools/cmdline-tools/bin
-        export PATH="$PATH:/tmp/cmdline-tools/cmdline-tools/bin"
+        # 下载并安装 command-line-tools
+        curl -sL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o /tmp/cmdline-tools.zip
+        mkdir -p /usr/local/lib/android-sdk/cmdline-tools
+        unzip -q /tmp/cmdline-tools.zip -d /usr/local/lib/android-sdk/cmdline-tools
+        mv /usr/local/lib/android-sdk/cmdline-tools/tools /usr/local/lib/android-sdk/cmdline-tools/latest
+        export PATH="$PATH:/usr/local/lib/android-sdk/cmdline-tools/latest/bin"
         sdkmanager "platforms;android-33" "build-tools;33.0.2"
     
     - name: 添加执行权限
