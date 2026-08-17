@@ -1,0 +1,331 @@
+"use strict";
+/**
+ * 音乐应用后端服务
+ * - 用户注册/登录（Salted SHA-256）
+ * - 网易云音乐搜索
+ * - 直链解析（gdstudio API）
+ * - 收藏 / 历史记录持久化
+ */
+
+const express = require("express");
+const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
+const sqlite3 = require("sqlite3").verbose();
+const cors = require("cors");
+
+const PORT = process.env.PORT || 8080;
+const DATA_DIR = path.join(__dirname, "..", "data");
+const DB_PATH = path.join(DATA_DIR, "music.db");
+
+// ─── 工具函数 ───────────────────────────────────────────────
+
+function genSalt(len = 32) {
+  return crypto.randomBytes(len).toString("hex");
+}
+
+function sha256Hex(data) {
+  return crypto.createHash("sha256").update(data).digest("hex");
+}
+
+function saltedHash(password, salt) {
+  return sha256Hex(salt + password);
+}
+
+function generateSessionId() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+// ─── 数据库初始化 ───────────────────────────────────────────
+
+const db = new sqlite3.Database(DB_PATH);
+db.serialize(() => {
+  db.run(`CREATE TABLE IF NOT EXISTS users (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT UNIQUE NOT NULL,
+    salt       TEXT NOT NULL,
+    hash       TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS sessions (
+    id         TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS favorites (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    song_id    INTEGER NOT NULL,
+    song_name  TEXT NOT NULL,
+    artist     TEXT NOT NULL,
+    album      TEXT NOT NULL,
+    album_pic  TEXT,
+    added_at   TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, song_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`);
+  db.run(`CREATE TABLE IF NOT EXISTS play_history (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL,
+    song_id    INTEGER NOT NULL,
+    song_name  TEXT NOT NULL,
+    artist     TEXT NOT NULL,
+    album      TEXT NOT NULL,
+    played_at  TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )`);
+});
+db.closeOnError = true;
+
+// ─── Express 应用 ───────────────────────────────────────────
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, "..", "public")));
+
+// 临时会话存储（生产环境可换 Redis）
+const sessionStore = new Map();
+
+// ─── 认证中间件 ─────────────────────────────────────────────
+
+function authRequired(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "未登录" });
+  }
+  const sid = authHeader.slice(7);
+  const session = sessionStore.get(sid);
+  if (!session || new Date(session.expiresAt) < new Date()) {
+    sessionStore.delete(sid);
+    return res.status(401).json({ error: "登录已过期" });
+  }
+  req.userId = session.userId;
+  req.userName = session.userName;
+  next();
+}
+
+// ─── API：用户注册 ──────────────────────────────────────────
+
+app.post("/api/auth/register", (req, res) => {
+  const { name, password } = req.body;
+  if (!name || !password) return res.status(400).json({ error: "用户名和密码不能为空" });
+  if (name.length < 2 || name.length > 20) return res.status(400).json({ error: "用户名长度 2-20 位" });
+  if (password.length < 6) return res.status(400).json({ error: "密码至少 6 位" });
+
+  const salt = genSalt();
+  const hash = saltedHash(password, salt);
+
+  db.run(
+    "INSERT INTO users (name, salt, hash) VALUES (?, ?, ?)",
+    [name, salt, hash],
+    function (err) {
+      if (err) {
+        if (err.message.includes("UNIQUE constraint")) {
+          return res.status(409).json({ error: "用户名已存在" });
+        }
+        return res.status(500).json({ error: "注册失败" });
+      }
+      // 自动登录
+      const sessionId = generateSessionId();
+      sessionStore.set(sessionId, {
+        userId: this.lastID,
+        userName: name,
+        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      });
+      res.json({ sessionId, user: { id: this.lastID, name } });
+    }
+  );
+});
+
+// ─── API：用户登录 ──────────────────────────────────────────
+
+app.post("/api/auth/login", (req, res) => {
+  const { name, password } = req.body;
+  if (!name || !password) return res.status(400).json({ error: "用户名和密码不能为空" });
+
+  db.get("SELECT * FROM users WHERE name = ?", [name], (err, user) => {
+    if (err || !user) return res.status(401).json({ error: "用户名或密码错误" });
+    const expected = saltedHash(password, user.salt);
+    if (expected !== user.hash) return res.status(401).json({ error: "用户名或密码错误" });
+
+    const sessionId = generateSessionId();
+    sessionStore.set(sessionId, {
+      userId: user.id,
+      userName: user.name,
+      expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    res.json({ sessionId, user: { id: user.id, name: user.name } });
+  });
+});
+
+// ─── API：登出 ──────────────────────────────────────────────
+
+app.post("/api/auth/logout", authRequired, (req, res) => {
+  // 从请求体或 header 取 sessionId
+  const sid = (req.body && req.body.sessionId) || req.headers.authorization?.slice(7);
+  if (sid) sessionStore.delete(sid);
+  res.json({ ok: true });
+});
+
+// ─── API：搜索音乐 ──────────────────────────────────────────
+
+app.get("/api/search", authRequired, async (req, res) => {
+  const { q } = req.query;
+  if (!q || !q.trim()) return res.status(400).json({ error: "搜索词不能为空" });
+
+  try {
+    const fetch = (await import("node-fetch")).default;
+    const url = `https://music.126.com/search/pc?type=1&s=${encodeURIComponent(q.trim())}&limit=30`;
+    const resp = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://music.126.com/",
+      },
+    });
+    const data = await resp.json();
+    const songs = (data.result && data.result.songs && data.result.songs.slice(0, 30)) || [];
+    res.json({ songs });
+  } catch (e) {
+    res.status(502).json({ error: "搜索失败: " + e.message });
+  }
+});
+
+// ─── API：解析播放直链 ──────────────────────────────────────
+
+app.get("/api/play/url", authRequired, async (req, res) => {
+  const { id } = req.query;
+  if (!id) return res.status(400).json({ error: "缺少歌曲ID" });
+
+  try {
+    const fetch = (await import("node-fetch")).default;
+    // 优先尝试多个解析源
+    const sources = [
+      `https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id=${id}`,
+      `https://api.nn.ci/kgqy/?id=${id}`,
+    ];
+
+    for (const src of sources) {
+      try {
+        const resp = await fetch(src, {
+          headers: { "User-Agent": "Mozilla/5.0" },
+          timeout: 8000,
+        });
+        const data = await resp.json();
+        const url = data.url || data.link || data.data;
+        if (url && typeof url === "string" && url.startsWith("http")) {
+          // 验证链接可达
+          const checkResp = await fetch(url, {
+            method: "HEAD",
+            headers: { "User-Agent": "Mozilla/5.0" },
+            timeout: 5000,
+          });
+          if (checkResp.ok) {
+            return res.json({ url, quality: data.quality || data.br || "standard" });
+          }
+        }
+      } catch (_) { continue; }
+    }
+
+    // 备用：尝试网易云直链格式
+    const musicUrl = `https://music.126.com/m/i/?url=${encodeURIComponent(`http://music.126.net/xrpc/click?xmlid=&urlid=${id}`)}`;
+    return res.status(404).json({ error: "暂无法解析该歌曲直链" });
+  } catch (e) {
+    res.status(502).json({ error: "解析失败: " + e.message });
+  }
+});
+
+// ─── API：获取歌曲详情（含封面）────────────────────────────
+
+app.get("/api/song/detail", authRequired, async (req, res) => {
+  const { ids } = req.query;
+  if (!ids) return res.status(400).json({ error: "缺少歌曲ID" });
+
+  try {
+    const fetch = (await import("node-fetch")).default;
+    const url = `https://music.126.com/api/v1/song/detail?ids=[${ids}]`;
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": "https://music.126.com/",
+      },
+    });
+    const data = await resp.json();
+    res.json(data);
+  } catch (e) {
+    res.status(502).json({ error: "获取详情失败" });
+  }
+});
+
+// ─── API：收藏 ──────────────────────────────────────────────
+
+app.get("/api/favorites", authRequired, (req, res) => {
+  db.all(
+    "SELECT * FROM favorites WHERE user_id = ? ORDER BY added_at DESC",
+    [req.userId],
+    (err, rows) => err ? res.status(500).json({ error: "获取失败" }) : res.json(rows)
+  );
+});
+
+app.post("/api/favorites", authRequired, (req, res) => {
+  const { songId, songName, artist, album, albumPic } = req.body;
+  if (!songId || !songName) return res.status(400).json({ error: "参数不足" });
+  db.run(
+    `INSERT OR IGNORE INTO favorites (user_id, song_id, song_name, artist, album, album_pic)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [req.userId, songId, songName, artist || "", album || "", albumPic || ""],
+    function (err) {
+      if (err) return res.status(500).json({ error: "收藏失败" });
+      res.json({ ok: true, id: this.lastID });
+    }
+  );
+});
+
+app.delete("/api/favorites/:songId", authRequired, (req, res) => {
+  db.run("DELETE FROM favorites WHERE user_id = ? AND song_id = ?", [req.userId, req.params.songId], function (err) {
+    if (err) return res.status(500).json({ error: "删除失败" });
+    res.json({ ok: true, changed: this.changes });
+  });
+});
+
+// ─── API：播放历史 ──────────────────────────────────────────
+
+app.get("/api/history", authRequired, (req, res) => {
+  db.all(
+    "SELECT * FROM play_history WHERE user_id = ? ORDER BY played_at DESC LIMIT 100",
+    [req.userId],
+    (err, rows) => err ? res.status(500).json({ error: "获取失败" }) : res.json(rows)
+  );
+});
+
+app.post("/api/history", authRequired, (req, res) => {
+  const { songId, songName, artist, album } = req.body;
+  if (!songId || !songName) return res.status(400).json({ error: "参数不足" });
+  db.run(
+    `INSERT INTO play_history (user_id, song_id, song_name, artist, album)
+     VALUES (?, ?, ?, ?, ?)`,
+    [req.userId, songId, songName, artist || "", album || ""],
+    function (err) {
+      if (err) return res.status(500).json({ error: "记录失败" });
+      res.json({ ok: true });
+    }
+  );
+});
+
+// ─── API：当前用户信息 ──────────────────────────────────────
+
+app.get("/api/me", authRequired, (req, res) => {
+  res.json({ user: { id: req.userId, name: req.userName } });
+});
+
+// ─── 启动服务 ──────────────────────────────────────────────
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🎵 音乐服务已启动: http://0.0.0.0:${PORT}`);
+});

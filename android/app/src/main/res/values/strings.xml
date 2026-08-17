@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">MyMusic</string>
+    <string name="title_activity_main">MyMusic</string>
+    <string name="package_name">com.operit.music_app</string>
+    <string name="custom_url_scheme">com.operit.music_app</string>
+</resources>
